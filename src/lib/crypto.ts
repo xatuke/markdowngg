@@ -75,7 +75,7 @@ export async function encrypt(
   combined.set(new Uint8Array(encrypted), iv.length);
 
   // Return as base64
-  return arrayBufferToBase64(combined);
+  return arrayBufferToBase64(combined.buffer);
 }
 
 /**

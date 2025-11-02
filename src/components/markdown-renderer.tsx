@@ -252,17 +252,6 @@ export function MarkdownRenderer({
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
         rehypePlugins={[rehypeKatex, rehypeRaw, rehypeHighlight]}
-        onError={(error) => {
-          console.error("Markdown rendering error:", error);
-          setErrors((prev) => [
-            ...prev,
-            {
-              type: "general",
-              message: "Failed to render markdown",
-              details: error.message,
-            },
-          ]);
-        }}
       >
         {content}
       </ReactMarkdown>
