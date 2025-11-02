@@ -24,13 +24,6 @@ A zero-knowledge markdown editor and sharing service with LaTeX support.
 6. Click "Save" to update the shared document with your changes
 7. Viewers see updates when they refresh the shared link
 
-## Setup
-
-### Prerequisites
-
-- Node.js 18+ and npm/yarn/pnpm
-- For production: PostgreSQL database
-
 ### Installation
 
 ```bash
@@ -132,15 +125,6 @@ $$
 - Keys are stored in URL fragments (hash), which are not sent in HTTP requests
 - The server only stores encrypted content
 
-## Tech Stack
-
-- **Framework**: Next.js 15
-- **Database**: Drizzle ORM with PostgreSQL/SQLite
-- **Editor**: Monaco Editor
-- **Markdown**: react-markdown with remark/rehype plugins
-- **Math**: KaTeX
-- **UI**: shadcn/ui + Tailwind CSS
-- **Encryption**: Web Crypto API (AES-GCM)
 
 ## License
 

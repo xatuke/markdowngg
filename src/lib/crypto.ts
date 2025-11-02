@@ -117,6 +117,37 @@ export function generateId(): string {
 }
 
 /**
+ * Generate a random write token for document updates
+ * Returns a URL-safe base64 string
+ */
+export function generateWriteToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32)); // 256 bits
+  return arrayBufferToBase64(bytes.buffer);
+}
+
+/**
+ * Hash a write token for server-side storage
+ * Uses SHA-256 for simplicity (in production, consider bcrypt/argon2)
+ */
+export async function hashWriteToken(token: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(token);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  return arrayBufferToBase64(hashBuffer);
+}
+
+/**
+ * Verify a write token against its hash
+ */
+export async function verifyWriteToken(
+  token: string,
+  hash: string
+): Promise<boolean> {
+  const computedHash = await hashWriteToken(token);
+  return computedHash === hash;
+}
+
+/**
  * Helper: Convert ArrayBuffer to base64 string (URL-safe)
  */
 function arrayBufferToBase64(buffer: ArrayBuffer): string {

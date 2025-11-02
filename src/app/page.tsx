@@ -25,6 +25,8 @@ import {
   encrypt,
   importKey,
   decrypt,
+  generateWriteToken,
+  hashWriteToken,
 } from "@/lib/crypto";
 import {
   getDocumentHistory,
@@ -79,6 +81,7 @@ export default function Home() {
   const [content, setContent] = useState(DEFAULT_CONTENT);
   const [documentId, setDocumentId] = useState<string | null>(null);
   const [encryptionKey, setEncryptionKey] = useState<string | null>(null);
+  const [writeToken, setWriteToken] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -89,6 +92,7 @@ export default function Home() {
   const [editorWidth, setEditorWidth] = useState(50); // percentage
   const [isResizing, setIsResizing] = useState(false);
   const [activeTab, setActiveTab] = useState<"editor" | "preview">("editor");
+  const [showShareMenu, setShowShareMenu] = useState(false);
   const { toast } = useToast();
   const { theme, toggleTheme } = useTheme();
 
@@ -97,15 +101,82 @@ export default function Home() {
     setDocumentHistory(getDocumentHistory());
   }, []);
 
-  // Load document info from localStorage on mount
+  // Load document from URL hash on mount and hash changes
   useEffect(() => {
-    const savedId = localStorage.getItem("currentDocumentId");
-    const savedKey = localStorage.getItem("currentEncryptionKey");
+    async function loadFromUrl() {
+      const hash = window.location.hash.substring(1);
+      if (!hash) {
+        // No hash = new document
+        setDocumentId(null);
+        setEncryptionKey(null);
+        setWriteToken(null);
+        setContent(DEFAULT_CONTENT);
+        return;
+      }
 
-    if (savedId && savedKey) {
-      setDocumentId(savedId);
-      setEncryptionKey(savedKey);
+      // Parse hash format: [id]#key&write=token or [id]#key
+      const parts = hash.split("#");
+      if (parts.length < 2) {
+        console.error("Invalid URL format");
+        return;
+      }
+
+      const id = parts[0];
+      const keyAndToken = parts[1];
+      const hashParams = new URLSearchParams(keyAndToken);
+      const keyString = hashParams.get("write")
+        ? keyAndToken.split("&")[0]
+        : keyAndToken;
+      const tokenString = hashParams.get("write");
+
+      try {
+        setIsLoading(true);
+        setDocumentId(id);
+        setEncryptionKey(keyString);
+        setWriteToken(tokenString);
+
+        // Fetch encrypted document
+        const response = await fetch(`/api/documents/${id}`);
+        if (!response.ok) {
+          throw new Error("Document not found");
+        }
+
+        const { encryptedContent } = await response.json();
+
+        // Decrypt content
+        const key = await importKey(keyString);
+        const decryptedContent = await decrypt(encryptedContent, key);
+
+        setContent(decryptedContent);
+
+        // Save to history
+        saveToHistory({
+          id,
+          encryptionKey: keyString,
+          writeToken: tokenString || "",
+          title: extractTitle(decryptedContent),
+          createdAt: Date.now(),
+          lastModified: Date.now(),
+        });
+        setDocumentHistory(getDocumentHistory());
+      } catch (error) {
+        console.error("Error loading document:", error);
+        toast({
+          title: "Error",
+          description: "Failed to load document",
+          variant: "destructive",
+        });
+      } finally {
+        setIsLoading(false);
+      }
     }
+
+    loadFromUrl();
+
+    // Listen for hash changes
+    const handleHashChange = () => loadFromUrl();
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
   }, []);
 
   // Keyboard shortcut for save (Ctrl+S or Cmd+S)
@@ -113,7 +184,7 @@ export default function Home() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
-        if (documentId && encryptionKey && !isSaving && !isLoading) {
+        if (documentId && encryptionKey && writeToken && !isSaving && !isLoading) {
           handleSave();
         }
       }
@@ -121,7 +192,7 @@ export default function Home() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [documentId, encryptionKey, isSaving, isLoading, content]);
+  }, [documentId, encryptionKey, writeToken, isSaving, isLoading, content]);
 
   // Handle resizing
   useEffect(() => {
@@ -156,22 +227,48 @@ export default function Home() {
     };
   }, [isResizing]);
 
-  // Get the shareable URL
-  const getShareUrl = () => {
+  // Get read-only shareable URL (view only, no write token)
+  const getReadOnlyUrl = () => {
     if (!documentId || !encryptionKey) return null;
     return `${window.location.origin}/view/${documentId}#${encryptionKey}`;
   };
 
-  // Copy share URL to clipboard
-  async function copyShareUrl() {
-    const url = getShareUrl();
+  // Get editable shareable URL (with write token)
+  const getEditableUrl = () => {
+    if (!documentId || !encryptionKey || !writeToken) return null;
+    return `${window.location.origin}/#${documentId}#${encryptionKey}&write=${writeToken}`;
+  };
+
+  // Copy read-only URL to clipboard
+  async function copyReadOnlyUrl() {
+    const url = getReadOnlyUrl();
     if (!url) return;
 
     try {
       await navigator.clipboard.writeText(url);
       toast({
-        title: "Link copied",
-        description: "Share link copied to clipboard",
+        title: "Read-only link copied",
+        description: "Recipients can view but not edit",
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to copy link",
+        variant: "destructive",
+      });
+    }
+  }
+
+  // Copy editable URL to clipboard
+  async function copyEditableUrl() {
+    const url = getEditableUrl();
+    if (!url) return;
+
+    try {
+      await navigator.clipboard.writeText(url);
+      toast({
+        title: "Editable link copied",
+        description: "Recipients can view and edit",
       });
     } catch (error) {
       toast({
@@ -197,17 +294,22 @@ export default function Home() {
       const response = await fetch(`/api/documents/${documentId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ encryptedContent }),
+        body: JSON.stringify({
+          encryptedContent,
+          writeToken: writeToken || undefined,
+        }),
       });
 
       if (!response.ok) {
-        throw new Error("Failed to update document");
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || "Failed to update document");
       }
 
       // Update in history
       saveToHistory({
         id: documentId,
         encryptionKey: encryptionKey,
+        writeToken: writeToken || "",
         title: extractTitle(content),
         createdAt: Date.now(),
         lastModified: Date.now(),
@@ -223,7 +325,7 @@ export default function Home() {
       console.error("Error saving:", error);
       toast({
         title: "Error",
-        description: "Failed to save document",
+        description: error instanceof Error ? error.message : "Failed to save document",
         variant: "destructive",
       });
     } finally {
@@ -240,6 +342,10 @@ export default function Home() {
       const key = await generateKey();
       const keyString = await exportKey(key);
 
+      // Generate write token
+      const token = generateWriteToken();
+      const tokenHash = await hashWriteToken(token);
+
       // Encrypt content
       const encryptedContent = await encrypt(content, key);
 
@@ -247,7 +353,10 @@ export default function Home() {
       const response = await fetch("/api/documents", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ encryptedContent }),
+        body: JSON.stringify({
+          encryptedContent,
+          writeTokenHash: tokenHash,
+        }),
       });
 
       if (!response.ok) {
@@ -256,18 +365,12 @@ export default function Home() {
 
       const { id } = await response.json();
 
-      // Store in localStorage
-      localStorage.setItem("currentDocumentId", id);
-      localStorage.setItem("currentEncryptionKey", keyString);
-
-      setDocumentId(id);
-      setEncryptionKey(keyString);
-
       // Save to history
       const now = Date.now();
       saveToHistory({
         id,
         encryptionKey: keyString,
+        writeToken: token,
         title: extractTitle(content),
         createdAt: now,
         lastModified: now,
@@ -275,15 +378,12 @@ export default function Home() {
 
       setDocumentHistory(getDocumentHistory());
 
-      // Create shareable URL with key in hash
-      const url = `${window.location.origin}/view/${id}#${keyString}`;
-
-      // Copy to clipboard
-      await navigator.clipboard.writeText(url);
+      // Navigate to the new document URL (with write token)
+      window.location.hash = `${id}#${keyString}&write=${token}`;
 
       toast({
-        title: "Link copied to clipboard",
-        description: "Share this link to let others view your document",
+        title: "Document created",
+        description: "You can now share this document with others",
       });
     } catch (error) {
       console.error("Error sharing:", error);
@@ -299,11 +399,8 @@ export default function Home() {
 
   // Start a new document
   function handleNew() {
-    localStorage.removeItem("currentDocumentId");
-    localStorage.removeItem("currentEncryptionKey");
-    setDocumentId(null);
-    setEncryptionKey(null);
-    setContent(DEFAULT_CONTENT);
+    // Navigate to home (clear hash)
+    window.location.hash = "";
 
     toast({
       title: "New document",
@@ -312,47 +409,14 @@ export default function Home() {
   }
 
   // Load a document from history
-  async function loadDocument(doc: DocumentMetadata) {
-    try {
-      setIsLoading(true);
+  function loadDocument(doc: DocumentMetadata) {
+    // Navigate to the document URL
+    const hash = doc.writeToken
+      ? `${doc.id}#${doc.encryptionKey}&write=${doc.writeToken}`
+      : `${doc.id}#${doc.encryptionKey}`;
 
-      // Fetch encrypted document
-      const response = await fetch(`/api/documents/${doc.id}`);
-      if (!response.ok) {
-        throw new Error("Document not found");
-      }
-
-      const { encryptedContent } = await response.json();
-
-      // Decrypt content
-      const key = await importKey(doc.encryptionKey);
-      const decryptedContent = await decrypt(encryptedContent, key);
-
-      // Update state
-      setContent(decryptedContent);
-      setDocumentId(doc.id);
-      setEncryptionKey(doc.encryptionKey);
-
-      // Store as current document
-      localStorage.setItem("currentDocumentId", doc.id);
-      localStorage.setItem("currentEncryptionKey", doc.encryptionKey);
-
-      setSidebarOpen(false);
-
-      toast({
-        title: "Document loaded",
-        description: doc.title,
-      });
-    } catch (error) {
-      console.error("Error loading document:", error);
-      toast({
-        title: "Error",
-        description: "Failed to load document",
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoading(false);
-    }
+    window.location.hash = hash;
+    setSidebarOpen(false);
   }
 
   // Delete a document from history
@@ -393,16 +457,62 @@ export default function Home() {
           <h1 className="text-base font-semibold">markdown.gg</h1>
 
           {documentId && (
-            <Button
-              onClick={copyShareUrl}
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 gap-1.5 ml-4"
-              title="Copy share link"
-            >
-              <Copy className="w-3 h-3" />
-              <span className="text-xs hidden sm:inline">Copy link</span>
-            </Button>
+            <div className="relative ml-4">
+              <Button
+                onClick={() => setShowShareMenu(!showShareMenu)}
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 gap-1.5"
+                title="Share options"
+              >
+                <Share2 className="w-3 h-3" />
+                <span className="text-xs hidden sm:inline">Share</span>
+              </Button>
+
+              {showShareMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setShowShareMenu(false)}
+                  />
+                  <div className="absolute left-0 top-full mt-1 w-64 bg-popover border border-border rounded-md shadow-lg z-20 py-1">
+                    <button
+                      onClick={() => {
+                        copyReadOnlyUrl();
+                        setShowShareMenu(false);
+                      }}
+                      className="w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-start gap-3"
+                    >
+                      <Copy className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <div className="font-medium">Read-only link</div>
+                        <div className="text-xs text-muted-foreground">
+                          Recipients can view but not edit
+                        </div>
+                      </div>
+                    </button>
+
+                    {writeToken && (
+                      <button
+                        onClick={() => {
+                          copyEditableUrl();
+                          setShowShareMenu(false);
+                        }}
+                        className="w-full px-3 py-2 text-left text-sm hover:bg-accent flex items-start gap-3"
+                      >
+                        <Copy className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                        <div>
+                          <div className="font-medium">Editable link</div>
+                          <div className="text-xs text-muted-foreground">
+                            Recipients can view and edit
+                          </div>
+                        </div>
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
 
@@ -435,18 +545,24 @@ export default function Home() {
                 <FilePlus className="w-4 h-4" />
                 <span className="hidden sm:inline">New</span>
               </Button>
-              <Button
-                onClick={handleSave}
-                disabled={isSaving || isLoading}
-                size="sm"
-                className="gap-2"
-                title={isSaving ? "Saving..." : "Save document"}
-              >
-                <Save className="w-4 h-4" />
-                <span className="hidden sm:inline">
-                  {isSaving ? "Saving..." : "Save"}
-                </span>
-              </Button>
+              {writeToken ? (
+                <Button
+                  onClick={handleSave}
+                  disabled={isSaving || isLoading}
+                  size="sm"
+                  className="gap-2"
+                  title={isSaving ? "Saving..." : "Save document"}
+                >
+                  <Save className="w-4 h-4" />
+                  <span className="hidden sm:inline">
+                    {isSaving ? "Saving..." : "Save"}
+                  </span>
+                </Button>
+              ) : (
+                <div className="px-3 py-1.5 text-sm text-muted-foreground border border-border rounded-md">
+                  Read Only
+                </div>
+              )}
             </>
           ) : (
             <Button
@@ -509,7 +625,7 @@ export default function Home() {
         {/* Mobile View: Single Panel with Tabs */}
         <div className="flex-1 overflow-hidden md:hidden">
           {activeTab === "editor" ? (
-            <Editor value={content} onChange={setContent} theme={theme} />
+            <Editor value={content} onChange={setContent} theme={theme} readOnly={documentId !== null && !writeToken} />
           ) : (
             <div className="h-full overflow-auto">
               <MarkdownRenderer content={content} theme={theme} />
@@ -521,7 +637,7 @@ export default function Home() {
         <div className="hidden md:flex flex-1 overflow-hidden editor-preview-container">
           {/* Editor */}
           <div style={{ width: `${editorWidth}%` }} className="overflow-hidden">
-            <Editor value={content} onChange={setContent} theme={theme} />
+            <Editor value={content} onChange={setContent} theme={theme} readOnly={documentId !== null && !writeToken} />
           </div>
 
           {/* Resizable Divider */}

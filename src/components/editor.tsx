@@ -7,9 +7,10 @@ interface EditorProps {
   value: string;
   onChange: (value: string) => void;
   theme?: "light" | "dark";
+  readOnly?: boolean;
 }
 
-export function Editor({ value, onChange, theme = "dark" }: EditorProps) {
+export function Editor({ value, onChange, theme = "dark", readOnly = false }: EditorProps) {
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const valueRef = useRef(value);
@@ -127,6 +128,7 @@ export function Editor({ value, onChange, theme = "dark" }: EditorProps) {
           verticalScrollbarSize: 10,
           horizontalScrollbarSize: 10,
         },
+        readOnly: readOnly,
       }}
     />
   );

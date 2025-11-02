@@ -34,11 +34,18 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { encryptedContent } = body;
+    const { encryptedContent, writeTokenHash } = body;
 
     if (!encryptedContent || typeof encryptedContent !== "string") {
       return NextResponse.json(
         { error: "Invalid encrypted content" },
+        { status: 400 },
+      );
+    }
+
+    if (!writeTokenHash || typeof writeTokenHash !== "string") {
+      return NextResponse.json(
+        { error: "Invalid write token hash" },
         { status: 400 },
       );
     }
@@ -58,6 +65,7 @@ export async function POST(request: NextRequest) {
     await db.insert(documents).values({
       id,
       encryptedContent,
+      writeTokenHash,
       createdAt: new Date(),
     });
 

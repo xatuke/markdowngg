@@ -8,6 +8,7 @@ import {
   addRateLimitHeaders,
   RATE_LIMITS,
 } from "@/lib/rate-limit";
+import { verifyWriteToken } from "@/lib/crypto";
 
 /**
  * GET /api/documents/[id]
@@ -116,12 +117,19 @@ export async function PUT(
     }
 
     const body = await request.json();
-    const { encryptedContent } = body;
+    const { encryptedContent, writeToken } = body;
 
     if (!encryptedContent || typeof encryptedContent !== "string") {
       return NextResponse.json(
         { error: "Invalid encrypted content" },
         { status: 400 },
+      );
+    }
+
+    if (!writeToken || typeof writeToken !== "string") {
+      return NextResponse.json(
+        { error: "Write token required" },
+        { status: 401 },
       );
     }
 
@@ -144,6 +152,27 @@ export async function PUT(
       return NextResponse.json(
         { error: "Document not found" },
         { status: 404 },
+      );
+    }
+
+    // Check if document has write token (old documents don't)
+    if (!existing[0].writeTokenHash) {
+      return NextResponse.json(
+        { error: "This document was created before write protection was added and cannot be edited" },
+        { status: 403 },
+      );
+    }
+
+    // Verify write token
+    const isValidToken = await verifyWriteToken(
+      writeToken,
+      existing[0].writeTokenHash
+    );
+
+    if (!isValidToken) {
+      return NextResponse.json(
+        { error: "Invalid write token" },
+        { status: 403 },
       );
     }
 

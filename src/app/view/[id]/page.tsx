@@ -3,8 +3,10 @@
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
-import { FileText, AlertCircle } from "lucide-react";
+import { FileText, AlertCircle, Edit } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { importKey, decrypt } from "@/lib/crypto";
+import { saveToHistory, extractTitle } from "@/lib/document-history";
 
 export default function ViewPage() {
   const params = useParams();
@@ -13,15 +15,27 @@ export default function ViewPage() {
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [encryptionKey, setEncryptionKey] = useState<string | null>(null);
+  const [writeToken, setWriteToken] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadDocument() {
       try {
-        // Get encryption key from URL hash
+        // Parse URL hash for encryption key and optional write token
         const hash = window.location.hash.substring(1);
         if (!hash) {
           throw new Error("No encryption key found in URL");
         }
+
+        // Parse hash parameters
+        const hashParams = new URLSearchParams(hash);
+        const keyString = hashParams.get("write")
+          ? hash.split("&")[0] // If write token exists, key is before &
+          : hash; // Otherwise, entire hash is the key
+        const tokenString = hashParams.get("write");
+
+        setEncryptionKey(keyString);
+        setWriteToken(tokenString);
 
         // Fetch encrypted document
         const response = await fetch(`/api/documents/${id}`);
@@ -32,10 +46,21 @@ export default function ViewPage() {
         const { encryptedContent } = await response.json();
 
         // Decrypt content
-        const key = await importKey(hash);
+        const key = await importKey(keyString);
         const decryptedContent = await decrypt(encryptedContent, key);
 
         setContent(decryptedContent);
+
+        // Save to history
+        const now = Date.now();
+        saveToHistory({
+          id,
+          encryptionKey: keyString,
+          writeToken: tokenString || "",
+          title: extractTitle(decryptedContent),
+          createdAt: now,
+          lastModified: now,
+        });
       } catch (err) {
         console.error("Error loading document:", err);
         setError(
@@ -51,6 +76,18 @@ export default function ViewPage() {
     }
   }, [id]);
 
+  // Open document in editor
+  function openInEditor() {
+    if (!encryptionKey) return;
+
+    // Navigate to editor with document in URL
+    const hash = writeToken
+      ? `${id}#${encryptionKey}&write=${writeToken}`
+      : `${id}#${encryptionKey}`;
+
+    window.location.href = `/#${hash}`;
+  }
+
   return (
     <div className="flex flex-col h-screen bg-background">
       {/* Header */}
@@ -59,9 +96,21 @@ export default function ViewPage() {
           <FileText className="w-5 h-5" />
           <h1 className="text-base font-semibold">markdown.gg</h1>
           <span className="text-xs text-muted-foreground">
-            (read-only)
+            {writeToken ? "(view mode)" : "(read-only)"}
           </span>
         </div>
+
+        {writeToken && !isLoading && !error && (
+          <Button
+            onClick={openInEditor}
+            size="sm"
+            className="gap-2"
+            title="Open in editor"
+          >
+            <Edit className="w-4 h-4" />
+            <span className="hidden sm:inline">Edit</span>
+          </Button>
+        )}
       </header>
 
       {/* Content */}

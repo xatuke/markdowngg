@@ -6,6 +6,7 @@
 export interface DocumentMetadata {
   id: string;
   encryptionKey: string;
+  writeToken: string; // Token for write access
   title: string; // First line of content
   createdAt: number;
   lastModified: number;
